@@ -19,15 +19,13 @@ const (
 
 var (
 	pcapFile string = "NICTProxy.dmp"
-	handle   *pcap.Handle
-	err      error
 )
 
 func main() {
 	table := ConnectionTable{}
 
 	// Open file instead of device
-	handle, err = pcap.OpenOffline(pcapFile)
+	handle, err := pcap.OpenOffline(pcapFile)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -42,15 +40,15 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	count := 0
 	for packet := range packetSource.Packets() {
-		/*
-			if count == 50 {
-				return
-			}
-		*/
+
+		if count == 50 {
+			return
+		}
+
 		if proxybpf.Matches(packet.Metadata().CaptureInfo, packet.Data()) {
 			connection := table.ProcessPacket(packet)
 			if connection != nil {
-				fmt.Println(connection, packet)
+				fmt.Printf("CONNECTION:%+v\n%v\n", connection, packet)
 			}
 		}
 

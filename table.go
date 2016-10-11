@@ -1,37 +1,68 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/url"
 	"strings"
 
 	"github.com/google/gopacket"
 )
 
 type Connection struct {
-	SrcIP    string
-	SrcPort  string
-	Domain   string
-	Endpoint string
-	DstIP    string
-	DstPort  string
+	SrcIP   string
+	SrcPort string
+	Url     *url.URL
+	DstIP   string
+	DstPort string
 }
 
-func (this *Connection) ParseEndpoint() error {
-	index := strings.Index(this.Endpoint, ":")
-	if index == -1 {
-		return errors.New("Port not found")
+func (this *Connection) ParseUrl() error {
+	portIndex := strings.Index(this.Url.Host, ":")
+	host := ""
+	if portIndex == -1 {
+		host = this.Url.Host
+	} else {
+		host = this.Url.Host[:portIndex]
 	}
-	this.DstPort = this.Endpoint[index+1:]
-	this.Domain = this.Endpoint[:index]
-	ip, err := net.ResolveIPAddr("ip4", this.Domain)
+	ip, err := net.ResolveIPAddr("ip4", host)
 	if err != nil {
 		return err
 	}
 	this.DstIP = ip.String()
 	return nil
+}
+
+func URLFromMethod(appData string, method string) string {
+	noMethod := appData[len(method+" "):]
+	index := strings.Index(noMethod, " ")
+	if index == -1 {
+		return ""
+	}
+	return noMethod[:index]
+}
+
+func (this *Connection) ParseHTTPHeader(appData string) bool {
+	rawUrl := ""
+	if strings.HasPrefix(appData, "CONNECT") {
+		rawUrl = URLFromMethod(appData, "CONNECT")
+	} else if strings.HasPrefix(appData, "GET") {
+		rawUrl = URLFromMethod(appData, "GET")
+	} else if strings.HasPrefix(appData, "POST") {
+		rawUrl = URLFromMethod(appData, "POST")
+	} else {
+		return false
+	}
+	parsedUrl, err := url.Parse(rawUrl)
+	if err != nil {
+		return false
+	}
+	this.Url = parsedUrl
+	if err := this.ParseUrl(); err != nil {
+		log.Println("Error resolving", this.Url, err)
+	}
+	return true
 }
 
 type ConnectionTable map[string]*Connection
@@ -58,17 +89,8 @@ func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) *Connection {
 			return nil
 		}
 		contents := string(appLayer.LayerContents())
-		if !strings.HasPrefix(contents, "CONNECT ") {
+		if !connection.ParseHTTPHeader(contents) {
 			return nil
-		}
-		noConnect := contents[len("CONNECT "):]
-		index := strings.Index(noConnect, " ")
-		if index == -1 {
-			return nil
-		}
-		connection.Endpoint = noConnect[:index]
-		if err := connection.ParseEndpoint(); err != nil {
-			log.Println("Error resolving", connection.Endpoint, err)
 		}
 		connection.SrcIP = netflow.Src().String()
 		connection.SrcPort = transflow.Src().String()
