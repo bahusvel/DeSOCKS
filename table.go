@@ -13,19 +13,12 @@ import (
 type Connection struct {
 	SrcIP   string
 	SrcPort string
-	Url     *url.URL
+	Url     string
 	DstIP   string
 	DstPort string
 }
 
-func (this *Connection) ParseUrl() error {
-	portIndex := strings.Index(this.Url.Host, ":")
-	host := ""
-	if portIndex == -1 {
-		host = this.Url.Host
-	} else {
-		host = this.Url.Host[:portIndex]
-	}
+func (this *Connection) ParseUrl(host string) error {
 	ip, err := net.ResolveIPAddr("ip4", host)
 	if err != nil {
 		return err
@@ -44,23 +37,42 @@ func URLFromMethod(appData string, method string) string {
 }
 
 func (this *Connection) ParseHTTPHeader(appData string) bool {
-	rawUrl := ""
 	if strings.HasPrefix(appData, "CONNECT") {
-		rawUrl = URLFromMethod(appData, "CONNECT")
+		this.Url = URLFromMethod(appData, "CONNECT")
+		host := ""
+		portIndex := strings.Index(this.Url, ":")
+		if portIndex == -1 {
+			return false
+		}
+		host = this.Url[:portIndex]
+		this.DstPort = this.Url[portIndex+1:]
+		if err := this.ParseUrl(host); err != nil {
+			log.Println("Error resolving", host, err)
+		}
+		return true
 	} else if strings.HasPrefix(appData, "GET") {
-		rawUrl = URLFromMethod(appData, "GET")
+		this.Url = URLFromMethod(appData, "GET")
 	} else if strings.HasPrefix(appData, "POST") {
-		rawUrl = URLFromMethod(appData, "POST")
+		this.Url = URLFromMethod(appData, "POST")
 	} else {
 		return false
 	}
-	parsedUrl, err := url.Parse(rawUrl)
+	parsedUrl, err := url.Parse(this.Url)
 	if err != nil {
 		return false
 	}
-	this.Url = parsedUrl
-	if err := this.ParseUrl(); err != nil {
-		log.Println("Error resolving", this.Url, err)
+	host := ""
+	portIndex := strings.Index(parsedUrl.Host, ":")
+	if portIndex == -1 {
+		host = parsedUrl.Host
+		this.DstPort = "80"
+	} else {
+		host = parsedUrl.Host[:portIndex]
+		this.DstPort = parsedUrl.Host[portIndex+1:]
+	}
+
+	if err := this.ParseUrl(host); err != nil {
+		log.Println("Error resolving", host, err)
 	}
 	return true
 }

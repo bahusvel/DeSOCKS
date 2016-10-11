@@ -40,15 +40,15 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	count := 0
 	for packet := range packetSource.Packets() {
-
-		if count == 50 {
-			return
-		}
-
+		/*
+			if count == 50 {
+				return
+			}
+		*/
 		if proxybpf.Matches(packet.Metadata().CaptureInfo, packet.Data()) {
 			connection := table.ProcessPacket(packet)
 			if connection != nil {
-				fmt.Printf("CONNECTION:%+v\n%v\n", connection, packet)
+				//fmt.Printf("CONNECTION:%+v\n%v\n", connection, packet)
 			}
 		}
 
