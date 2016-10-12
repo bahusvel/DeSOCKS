@@ -7,9 +7,12 @@ package main
 import (
 	"fmt"
 	"log"
+	"os"
 
 	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
+	"github.com/google/gopacket/pcapgo"
 )
 
 const (
@@ -18,37 +21,49 @@ const (
 )
 
 var (
-	pcapFile string = "NICTProxy.dmp"
+	readFile  string = "NICTProxy.dmp"
+	writeFile string = "Rewritten.pcap"
 )
 
-func main() {
-	table := ConnectionTable{}
-
-	// Open file instead of device
-	handle, err := pcap.OpenOffline(pcapFile)
+func openRead() *pcap.Handle {
+	handle, err := pcap.OpenOffline(readFile)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer handle.Close()
+	return handle
+}
 
-	proxybpf, err := handle.NewBPF(fmt.Sprintf("host %s and port %s", PROXY_IP, PROXY_PORT))
+func openWrite() (*pcapgo.Writer, *os.File) {
+	// Write a new file:
+	f, _ := os.Create(writeFile)
+	w := pcapgo.NewWriter(f)
+	w.WriteFileHeader(65536, layers.LinkTypeEthernet)
+	return w, f
+}
+
+func main() {
+	table := ConnectionTable{}
+	// Open file instead of device
+	readHandle := openRead()
+	defer readHandle.Close()
+	writeHandle, writeFile := openWrite()
+	defer writeFile.Close()
+
+	proxybpf, err := readHandle.NewBPF(fmt.Sprintf("host %s and port %s", PROXY_IP, PROXY_PORT))
 	if err != nil {
 		log.Fatal("Could not generate BPF", err)
 	}
 
 	// Loop through packets in file
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	packetSource := gopacket.NewPacketSource(readHandle, readHandle.LinkType())
 	count := 0
 	for packet := range packetSource.Packets() {
-		/*
-			if count == 50 {
-				return
-			}
-		*/
+
 		if proxybpf.Matches(packet.Metadata().CaptureInfo, packet.Data()) {
 			connection := table.ProcessPacket(packet)
 			if connection != nil {
-				//fmt.Printf("CONNECTION:%+v\n%v\n", connection, packet)
+				rewritten := connection.RewritePacket(packet)
+				writeHandle.WritePacket(packet.Metadata().CaptureInfo, rewritten)
 			}
 		}
 

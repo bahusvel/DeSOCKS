@@ -5,17 +5,20 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
+
+	"github.com/google/gopacket/layers"
 
 	"github.com/google/gopacket"
 )
 
 type Connection struct {
-	SrcIP   string
-	SrcPort string
+	SrcIP   net.IP
+	SrcPort layers.TCPPort
 	Url     string
-	DstIP   string
-	DstPort string
+	DstIP   net.IP
+	DstPort layers.TCPPort
 }
 
 func (this *Connection) ParseUrl(host string) error {
@@ -23,8 +26,30 @@ func (this *Connection) ParseUrl(host string) error {
 	if err != nil {
 		return err
 	}
-	this.DstIP = ip.String()
+	this.DstIP = ip.IP
 	return nil
+}
+
+func (this *Connection) RewritePacket(packet gopacket.Packet) []byte {
+	linklayer := packet.LinkLayer().(*layers.Ethernet)
+	ipLayer := packet.NetworkLayer().(*layers.IPv4)
+	tcpLayer := packet.TransportLayer().(*layers.TCP)
+	appLayer := packet.ApplicationLayer()
+	if ipLayer.SrcIP.String() == PROXY_IP {
+		ipLayer.SrcIP = this.DstIP
+		tcpLayer.SrcPort = this.DstPort
+	} else {
+		ipLayer.DstIP = this.DstIP
+		tcpLayer.DstPort = this.DstPort
+	}
+	buf := gopacket.NewSerializeBuffer()
+	if appLayer != nil {
+		gopacket.SerializeLayers(buf, gopacket.SerializeOptions{}, linklayer, ipLayer, tcpLayer, gopacket.Payload(tcpLayer.LayerPayload()))
+	} else {
+		gopacket.SerializeLayers(buf, gopacket.SerializeOptions{}, linklayer, ipLayer, tcpLayer)
+	}
+
+	return buf.Bytes()
 }
 
 func URLFromMethod(appData string, method string) string {
@@ -45,7 +70,8 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 			return false
 		}
 		host = this.Url[:portIndex]
-		this.DstPort = this.Url[portIndex+1:]
+		dstport, _ := strconv.ParseInt(this.Url[portIndex+1:], 10, 16)
+		this.DstPort = layers.TCPPort(uint16(dstport))
 		if err := this.ParseUrl(host); err != nil {
 			log.Println("Error resolving", host, err)
 		}
@@ -65,10 +91,11 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 	portIndex := strings.Index(parsedUrl.Host, ":")
 	if portIndex == -1 {
 		host = parsedUrl.Host
-		this.DstPort = "80"
+		this.DstPort = 80
 	} else {
 		host = parsedUrl.Host[:portIndex]
-		this.DstPort = parsedUrl.Host[portIndex+1:]
+		dstport, _ := strconv.ParseInt(this.Url[portIndex+1:], 10, 16)
+		this.DstPort = layers.TCPPort(uint16(dstport))
 	}
 
 	if err := this.ParseUrl(host); err != nil {
@@ -81,17 +108,17 @@ type ConnectionTable map[string]*Connection
 
 func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) *Connection {
 	key := ""
-	netflow := packet.NetworkLayer().NetworkFlow()
-	transflow := packet.TransportLayer().TransportFlow()
-	if netflow.Src().String() == PROXY_IP {
-		key = netflow.Dst().String()
-		key += ":" + transflow.Dst().String()
+	netflow := packet.NetworkLayer().(*layers.IPv4)
+	transflow := packet.TransportLayer().(*layers.TCP)
+	if netflow.SrcIP.String() == PROXY_IP {
+		key = netflow.DstIP.String()
+		key += ":" + transflow.DstPort.String()
 	} else {
-		key = netflow.Src().String()
-		key += ":" + transflow.Src().String()
+		key = netflow.SrcIP.String()
+		key += ":" + transflow.SrcPort.String()
 	}
 	connection, ok := (*this)[key]
-	if !ok && netflow.Src().String() == PROXY_IP {
+	if !ok && netflow.SrcIP.String() == PROXY_IP {
 		return nil
 	}
 	if !ok {
@@ -104,8 +131,8 @@ func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) *Connection {
 		if !connection.ParseHTTPHeader(contents) {
 			return nil
 		}
-		connection.SrcIP = netflow.Src().String()
-		connection.SrcPort = transflow.Src().String()
+		connection.SrcIP = netflow.SrcIP
+		connection.SrcPort = transflow.SrcPort
 		fmt.Printf("%+v\n", connection)
 		(*this)[key] = connection
 	}
