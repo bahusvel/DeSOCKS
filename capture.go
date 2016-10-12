@@ -7,6 +7,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"os"
 
 	"github.com/google/gopacket"
@@ -16,11 +17,11 @@ import (
 )
 
 const (
-	PROXY_IP   = "133.243.18.8"
 	PROXY_PORT = "3128"
 )
 
 var (
+	PROXY_IP         = net.IPv4(133, 243, 18, 8)
 	readFile  string = "NICTProxy.dmp"
 	writeFile string = "Rewritten.pcap"
 )
@@ -60,13 +61,21 @@ func main() {
 	for packet := range packetSource.Packets() {
 
 		if proxybpf.Matches(packet.Metadata().CaptureInfo, packet.Data()) {
-			connection := table.ProcessPacket(packet)
+			connection, established := table.ProcessPacket(packet)
 			if connection != nil {
+				if established {
+					for _, handshakePacket := range connection.Handshake {
+						//fmt.Println("Writing handshake", handshakePacket)
+						rewritten := connection.RewritePacket(handshakePacket)
+
+						writeHandle.WritePacket(handshakePacket.Metadata().CaptureInfo, rewritten)
+					}
+				}
 				rewritten := connection.RewritePacket(packet)
 				writeHandle.WritePacket(packet.Metadata().CaptureInfo, rewritten)
 			}
 		}
-
 		count++
 	}
+	fmt.Println(table)
 }

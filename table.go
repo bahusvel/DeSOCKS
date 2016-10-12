@@ -13,15 +13,27 @@ import (
 	"github.com/google/gopacket"
 )
 
+const (
+	STATE_SYN         = iota
+	STATE_ESTABLISHED = iota
+	STATE_CLOSED      = iota
+)
+
 type Connection struct {
-	SrcIP   net.IP
-	SrcPort layers.TCPPort
-	Url     string
-	DstIP   net.IP
-	DstPort layers.TCPPort
+	SrcIP     net.IP
+	SrcPort   layers.TCPPort
+	Url       string
+	DstIP     net.IP
+	DstPort   layers.TCPPort
+	State     int
+	Handshake []gopacket.Packet
 }
 
-func (this *Connection) ParseUrl(host string) error {
+func (this *Connection) String() string {
+	return fmt.Sprintf("Connection: (%s:%d)->(%s:%d) STATE=%d", this.SrcIP.String(), this.SrcPort, this.DstIP.String(), this.DstPort, this.State)
+}
+
+func (this *Connection) ResolveHost(host string) error {
 	ip, err := net.ResolveIPAddr("ip4", host)
 	if err != nil {
 		return err
@@ -35,7 +47,8 @@ func (this *Connection) RewritePacket(packet gopacket.Packet) []byte {
 	ipLayer := packet.NetworkLayer().(*layers.IPv4)
 	tcpLayer := packet.TransportLayer().(*layers.TCP)
 	appLayer := packet.ApplicationLayer()
-	if ipLayer.SrcIP.String() == PROXY_IP {
+	//HACK nil is here because of the bug in gopacket
+	if ipLayer.SrcIP.Equal(PROXY_IP) || ipLayer.SrcIP == nil {
 		ipLayer.SrcIP = this.DstIP
 		tcpLayer.SrcPort = this.DstPort
 	} else {
@@ -72,8 +85,9 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 		host = this.Url[:portIndex]
 		dstport, _ := strconv.ParseInt(this.Url[portIndex+1:], 10, 16)
 		this.DstPort = layers.TCPPort(uint16(dstport))
-		if err := this.ParseUrl(host); err != nil {
+		if err := this.ResolveHost(host); err != nil {
 			log.Println("Error resolving", host, err)
+			return false
 		}
 		return true
 	} else if strings.HasPrefix(appData, "GET") {
@@ -98,19 +112,21 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 		this.DstPort = layers.TCPPort(uint16(dstport))
 	}
 
-	if err := this.ParseUrl(host); err != nil {
+	if err := this.ResolveHost(host); err != nil {
 		log.Println("Error resolving", host, err)
+		return false
 	}
 	return true
 }
 
 type ConnectionTable map[string]*Connection
 
-func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) *Connection {
+func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) (*Connection, bool) {
 	key := ""
 	netflow := packet.NetworkLayer().(*layers.IPv4)
 	transflow := packet.TransportLayer().(*layers.TCP)
-	if netflow.SrcIP.String() == PROXY_IP {
+
+	if netflow.SrcIP.Equal(PROXY_IP) {
 		key = netflow.DstIP.String()
 		key += ":" + transflow.DstPort.String()
 	} else {
@@ -118,23 +134,35 @@ func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) *Connection {
 		key += ":" + transflow.SrcPort.String()
 	}
 	connection, ok := (*this)[key]
-	if !ok && netflow.SrcIP.String() == PROXY_IP {
-		return nil
-	}
 	if !ok {
 		connection = &Connection{}
+		connection.SrcIP = netflow.SrcIP
+		connection.SrcPort = transflow.SrcPort
+		connection.State = STATE_SYN
+		(*this)[key] = connection
+	}
+	if connection.State == STATE_SYN {
+		connection.Handshake = append(connection.Handshake, packet)
+		//fmt.Println("Appending handshake", packet)
+	}
+	if transflow.FIN || transflow.RST {
+		connection.State = STATE_CLOSED
+	}
+	if connection.State == STATE_SYN && !netflow.SrcIP.Equal(PROXY_IP) {
 		appLayer := packet.ApplicationLayer()
 		if appLayer == nil {
-			return nil
+			return nil, false
 		}
 		contents := string(appLayer.LayerContents())
 		if !connection.ParseHTTPHeader(contents) {
-			return nil
+			return nil, false
 		}
-		connection.SrcIP = netflow.SrcIP
-		connection.SrcPort = transflow.SrcPort
+		connection.State = STATE_ESTABLISHED
+		connection.Handshake = connection.Handshake[:len(connection.Handshake)-1]
+		//fmt.Printf("%+v\n%v\n", connection, connection.Handshake)
 		fmt.Printf("%+v\n", connection)
-		(*this)[key] = connection
+		return connection, true
 	}
-	return connection
+
+	return connection, false
 }
