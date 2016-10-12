@@ -23,7 +23,7 @@ const (
 type Connection struct {
 	SrcIP     net.IP
 	SrcPort   layers.TCPPort
-	Url       string
+	HostPort  string
 	DstIP     net.IP
 	DstPort   layers.TCPPort
 	State     int
@@ -87,37 +87,36 @@ func SplitHost(hostPort string) (string, int64) {
 	return hostPort[:portIndex], dstport
 }
 
+func HTTPMethod(request string) string {
+	if len(request) > 8 {
+		request = request[:8]
+	}
+	spaceIndex := strings.Index(request, " ")
+	if spaceIndex == -1 {
+		return ""
+	}
+	return request[:spaceIndex]
+}
+
 func (this *Connection) ParseHTTPHeader(appData string) bool {
 	host := ""
 	var port int64
-	if strings.HasPrefix(appData, "CONNECT") {
-		this.Url = URLFromMethod(appData, "CONNECT")
-		host, port = SplitHost(this.Url)
-		this.DstPort = layers.TCPPort(port)
-		if err := this.ResolveHost(host); err != nil {
-			log.Println("Error resolving", host, err)
+	method := HTTPMethod(appData)
+	switch method {
+	case "CONNECT":
+		this.HostPort = URLFromMethod(appData, method)
+	case "GET", "POST", "HEAD", "PUT", "DELETE", "TRACE", "OPTIONS", "PATCH":
+		methodUrl := URLFromMethod(appData, method)
+		parsedUrl, err := url.Parse(methodUrl)
+		if err != nil {
 			return false
 		}
-		return true
-	} else if strings.HasPrefix(appData, "GET") {
-		this.Url = URLFromMethod(appData, "GET")
-	} else if strings.HasPrefix(appData, "POST") {
-		this.Url = URLFromMethod(appData, "POST")
-	} else {
+		this.HostPort = parsedUrl.Host
+	default:
 		return false
 	}
-	parsedUrl, err := url.Parse(this.Url)
-	if err != nil {
-		return false
-	}
-
-	host, port = SplitHost(parsedUrl.Host)
-	if port == -1 {
-		this.DstPort = 80
-	} else {
-		this.DstPort = layers.TCPPort(port)
-	}
-
+	host, port = SplitHost(this.HostPort)
+	this.DstPort = layers.TCPPort(port)
 	if err := this.ResolveHost(host); err != nil {
 		log.Println("Error resolving", host, err)
 		return false
