@@ -75,17 +75,25 @@ func URLFromMethod(appData string, method string) string {
 	return noMethod[:index]
 }
 
+func SplitHost(hostPort string) (string, int64) {
+	portIndex := strings.Index(hostPort, ":")
+	if portIndex == -1 {
+		return hostPort, -1
+	}
+	dstport, err := strconv.ParseInt(hostPort[portIndex+1:], 10, 16)
+	if err != nil {
+		panic(err)
+	}
+	return hostPort[:portIndex], dstport
+}
+
 func (this *Connection) ParseHTTPHeader(appData string) bool {
+	host := ""
+	var port int64
 	if strings.HasPrefix(appData, "CONNECT") {
 		this.Url = URLFromMethod(appData, "CONNECT")
-		host := ""
-		portIndex := strings.Index(this.Url, ":")
-		if portIndex == -1 {
-			return false
-		}
-		host = this.Url[:portIndex]
-		dstport, _ := strconv.ParseInt(this.Url[portIndex+1:], 10, 16)
-		this.DstPort = layers.TCPPort(uint16(dstport))
+		host, port = SplitHost(this.Url)
+		this.DstPort = layers.TCPPort(port)
 		if err := this.ResolveHost(host); err != nil {
 			log.Println("Error resolving", host, err)
 			return false
@@ -102,15 +110,12 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 	if err != nil {
 		return false
 	}
-	host := ""
-	portIndex := strings.Index(parsedUrl.Host, ":")
-	if portIndex == -1 {
-		host = parsedUrl.Host
+
+	host, port = SplitHost(parsedUrl.Host)
+	if port == -1 {
 		this.DstPort = 80
 	} else {
-		host = parsedUrl.Host[:portIndex]
-		dstport, _ := strconv.ParseInt(this.Url[portIndex+1:], 10, 16)
-		this.DstPort = layers.TCPPort(uint16(dstport))
+		this.DstPort = layers.TCPPort(port)
 	}
 
 	if err := this.ResolveHost(host); err != nil {
@@ -141,6 +146,7 @@ func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) (*Connection,
 		(*this)[key] = connection
 	}
 	if connection.State == STATE_SYN {
+		// FIXME this may leak, handshake size needs to be limited
 		connection.Handshake = append(connection.Handshake, packet)
 		//fmt.Println("Appending handshake", packet)
 	}
