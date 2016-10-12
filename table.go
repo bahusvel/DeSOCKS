@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
@@ -119,19 +120,17 @@ func (this *Connection) ParseHTTPHeader(appData string) bool {
 	return true
 }
 
-type ConnectionTable map[string]*Connection
+type ConnectionTable map[uint64]*Connection
 
 func (this *ConnectionTable) ProcessPacket(packet gopacket.Packet) (*Connection, bool) {
-	key := ""
+	var key uint64
 	netflow := packet.NetworkLayer().(*layers.IPv4)
 	transflow := packet.TransportLayer().(*layers.TCP)
 
 	if netflow.SrcIP.Equal(PROXY_IP) {
-		key = netflow.DstIP.String()
-		key += ":" + transflow.DstPort.String()
+		key = (uint64(binary.BigEndian.Uint32(netflow.DstIP)) << 16) | uint64(transflow.DstPort)
 	} else {
-		key = netflow.SrcIP.String()
-		key += ":" + transflow.SrcPort.String()
+		key = (uint64(binary.BigEndian.Uint32(netflow.SrcIP)) << 16) | uint64(transflow.SrcPort)
 	}
 	connection, ok := (*this)[key]
 	if !ok {
